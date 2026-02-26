@@ -43,18 +43,13 @@ public class FactorNode {
 	private Edge sedge;
 	private List<Edge> pedges;
 	private List<Edge> uedges;
+    // 语句–特征因子的默认参数：一致时高概率，不一致时低概率
+    private static final double FEATURE_STMT_HIGH = 0.9;
+    private static final double FEATURE_STMT_LOW  = 0.1;
 	//private static List<Double> numbersArray2 = {0,2.3283064365e-10,5.4210108624e-20,0.00390625,1.5258789063e-5,0.3333333333,0.5};
 	// private static List<Double> numbersArray2;
 	private static List<Double> numbersArray;
 	static {
-		// numbersArray2 = new ArrayList<>();
-		// numbersArray2.add(0.0);
-		// numbersArray2.add(2.3283064365e-10);
-		// numbersArray2.add(5.4210108624e-20);
-		// numbersArray2.add(0.00390625);
-		// numbersArray2.add(1.5258789063e-5);
-		// numbersArray2.add(0.3333333333);
-		// numbersArray2.add(0.5);
 
 		try {
 			BufferedReader readTxt=new BufferedReader(new FileReader("./infer.txt"));
@@ -137,6 +132,104 @@ public class FactorNode {
 		// else
 			gettensor(allnodes, nnodes - 1);
 	}
+
+    /**
+     * 新增：语句节点与特征节点之间的二元因子。
+     *
+     * 节点顺序约定：
+     *   allnodes[0] = stmt
+     *   allnodes[1] = feature
+     *
+     * tensor 索引的二进制展开（与 send_message 中一致）：
+     *   index = 0 -> (stmt=false, feature=false)
+     *   index = 1 -> (stmt=true , feature=false)
+     *   index = 2 -> (stmt=false, feature=true)
+     *   index = 3 -> (stmt=true , feature=true)
+     *
+     * 我们令：
+     *   s,f 一致时权重 FEATURE_STMT_HIGH；
+     *   s,f 不一致时权重 FEATURE_STMT_LOW。
+     */
+    public FactorNode(StmtNode stmt, Node feature,
+                      Edge sedge, Edge fedge) {
+        this.stmt = stmt;
+        this.def = null;
+        this.preds = null;
+        this.uses  = null;
+        this.ops   = null;
+
+        this.dedge  = null;
+        this.sedge  = sedge;
+        this.pedges = null;
+        this.uedges = null;
+
+        this.allnodes = new ArrayList<>();
+        this.allnodes.add(stmt);    // bit0
+        this.allnodes.add(feature); // bit1
+
+        this.alledges = new ArrayList<>();
+        this.alledges.add(sedge);
+        this.alledges.add(fedge);
+
+        this.nnodes = allnodes.size();
+
+        this.tensor = new ArrayList<>();
+
+        // (stmt=false, feature=false)
+        this.tensor.add(FEATURE_STMT_HIGH);
+
+        // (stmt=true , feature=false)
+        this.tensor.add(FEATURE_STMT_LOW);
+
+        // (stmt=false, feature=true)
+        this.tensor.add(FEATURE_STMT_LOW);
+
+        // (stmt=true , feature=true)
+        this.tensor.add(FEATURE_STMT_HIGH);
+    }
+
+    // 新增：可疑特征组合因子（只连若干 Feature / Node）
+// 语义：
+// - allCorrectWeight：组合中所有特征都为 true(正确) 的权重（要设得比较小，比如 0.2）
+// - notAllCorrectWeight：其余任何状态（至少一个为 false）权重（设得大，比如 0.8）
+    public FactorNode(List<Node> featureNodes,
+                      List<Edge> featureEdges,
+                      double allCorrectWeight,
+                      double notAllCorrectWeight) {
+        this.preds = null;
+        this.def   = null;
+        this.stmt  = null;
+        this.uses  = null;
+        this.ops   = null;
+        this.dedge = null;
+        this.sedge = null;
+        this.pedges = null;
+        this.uedges = null;
+
+        this.allnodes = new ArrayList<>(featureNodes);
+        this.alledges = new ArrayList<>(featureEdges);
+        this.nnodes   = allnodes.size();
+        this.tensor   = new ArrayList<>(1 << nnodes);
+
+        // 这里对 hasUNKoperator 没有任何作用，但设为 false 更干净
+        this.hasUNKoperator = false;
+
+        // 一共 2^k 个状态，mask 的第 bit 位代表第 bit 个 featureNode 的布尔值
+        int totalStates = 1 << nnodes;
+        for (int mask = 0; mask < totalStates; mask++) {
+            boolean allCorrect = true;
+            for (int bit = 0; bit < nnodes; bit++) {
+                // 注意：我们沿用现有实现的约定：bit = 1 → 该节点取值 true（“正确”）
+                boolean val = ((mask >> bit) & 1) == 1;
+                if (!val) {
+                    allCorrect = false;
+                    break;
+                }
+            }
+            double w = allCorrect ? allCorrectWeight : notAllCorrectWeight;
+            this.tensor.add(w);
+        }
+    }
 
 	public List<Node> getpunodes() {
 		ArrayList<Node> ret = new ArrayList<>();
@@ -234,97 +327,11 @@ public class FactorNode {
 						v1 += tmp1;
 					}
 				}
-				// if(v1 + v0 == 0.0){
-				// System.out.println("one 0 detected");
-				// alledges.get(j).set_fton(0.0);
-				// }
-				// else
-				// if(Double.isNaN(v1 / (v1 + v0))){
-				// System.out.println("find nan , v1 = "+v1+", v0 = "+v0);
-				// }
 				alledges.get(j).set_fton(v1 / (v1 + v0));
 			}
 		}
 		else{
-			// // used to save all the messages from the nodes
-			// List<Apfloat> tmpvlist = new ArrayList<>();
-			// for (int i = 0; i < nnodes; i++) {
-			// 	tmpvlist.add(alledges.get(i).ap_get_ntof());
-			// }
-			// // System.out.println("tmplist = "+tmpvlist);
-			// for (int j = 0; j < nnodes; j++) {
-			// 	Apfloat v0 = new Apfloat("0.0", 100);
-			// 	Apfloat v1 = new Apfloat("0.0", 100);
-			// 	int step = (1 << j);
-			// 	int vnum = (1 << nnodes);
-			// 	// transform a tensor of nnodes-dimension into a one-dimension vector(two
-			// 	// values)
-			// 	for (int k = 0; k < vnum; k += 2 * step) {
-			// 		for (int o = 0; o < step; o++) {
-			// 			int index0 = k + o;
-			// 			Apfloat tmp0 = ap_tensor.get(index0);
 
-			// 			int index1 = k + o + step;
-			// 			Apfloat tmp1 = ap_tensor.get(index1);
-			// 			// get the bit and times the Corresponding message
-			// 			for (int mm = 0; mm < nnodes; mm++) {
-			// 				int bit0 = index0 % 2;
-			// 				index0 /= 2;
-			// 				int bit1 = index1 % 2;
-			// 				index1 /= 2;
-
-			// 				if (mm == j)
-			// 					continue;
-
-			// 				if (bit0 == 0) {
-			// 					// double tmp00 = tmp0* (1 - tmpvlist.get(mm));
-			// 					// if(Double.isNaN(tmp00))
-			// 					// System.out.println("in 0 , tmp0 = "+tmp0+", val = "+(1 - tmpvlist.get(mm)));
-			// 					// tmp0 *= (1 - tmpvlist.get(mm));
-			// 					tmp0 = tmp0.multiply(new Apfloat("1.0", 100).subtract(tmpvlist.get(mm)));
-
-			// 				} else {
-			// 					// double tmp01 = tmp0* tmpvlist.get(mm);
-			// 					// if(Double.isNaN(tmp01))
-			// 					// System.out.println("in 1 , tmp0 = "+tmp0+", val = "+tmpvlist.get(mm));
-			// 					// tmp0 *= tmpvlist.get(mm);
-			// 					tmp0 = tmp0.multiply(tmpvlist.get(mm));
-			// 				}
-
-			// 				if (bit1 == 0) {
-			// 					// double tmp10 = tmp1* (1 - tmpvlist.get(mm));
-			// 					// if(Double.isNaN(tmp10))
-			// 					// System.out.println("in 0 , tmp1 = "+tmp1+", val = "+(1 - tmpvlist.get(mm)));
-			// 					// tmp1 *= (1 - tmpvlist.get(mm));
-			// 					tmp1 = tmp1.multiply(new Apfloat("1.0", 100).subtract(tmpvlist.get(mm)));
-
-			// 				} else {
-			// 					// double tmp11 = tmp1*tmpvlist.get(mm);
-			// 					// if(Double.isNaN(tmp11))
-			// 					// System.out.println("in 0 , tmp1 = "+tmp1+", val = "+tmpvlist.get(mm));
-			// 					// tmp1 *= tmpvlist.get(mm);
-			// 					tmp1 = tmp1.multiply(tmpvlist.get(mm));
-			// 				}
-			// 			}
-
-			// 			v0 = v0.add(tmp0);
-			// 			v1 = v1.add(tmp1);
-
-			// 			// v0 += tmp0;
-			// 			// v1 += tmp1;
-			// 		}
-			// 	}
-			// 	// if(v1 + v0 == 0.0){
-			// 	// System.out.println("one 0 detected");
-			// 	// alledges.get(j).set_fton(0.0);
-			// 	// }
-			// 	// else
-			// 	// if(Double.isNaN(v1 / (v1 + v0))){
-			// 	// System.out.println("find nan , v1 = "+v1+", v0 = "+v0);
-			// 	// }
-			// 	// alledges.get(j).set_fton(v1 / (v1 + v0));
-			// 	alledges.get(j).ap_set_fton(v1.divide(v1.add(v0)));
-			// }
 		}
 	}
 
@@ -417,105 +424,10 @@ public class FactorNode {
 					return MEDIUM_LOW;
 				return LOW;
 			}
-			// if (!defv) {
-			// if (hasUNKoperator)
-			// return MEDIUM;
-			// return HIGH;
-			// }
-			// // else: def = true
-			// else if (pu) {
-			// if (hasUNKoperator)
-			// return MEDIUM;
-			// return LOW;
-			// }
-			// // def = true stmt = false use = false
-			// return LOW;// TODO should be medium when using certain ops.
+
 		}
 		return MEDIUM;
 	}
-
-	// public Apfloat ap_getProb() {
-	// 	boolean hasUNKoperator = false;
-	// 	if (ops != null)
-	// 		for (String op : ops) {
-	// 			for (String unk : unkops) {
-	// 				if (op.contentEquals(unk))
-	// 					hasUNKoperator = true;
-	// 			}
-	// 		}
-	// 	// if(hasUNKoperator)return MEDIUM;
-	// 	// hasUNKoperator = false;
-	// 	boolean defv = def.getCurrentValue();
-	// 	boolean predv = true;
-	// 	boolean usev = true;
-	// 	boolean stmtv = stmt.getCurrentValue();
-	// 	if (preds != null)
-	// 		for (Node p : preds) {
-	// 			if (!p.getCurrentValue()) {
-	// 				predv = false;
-	// 				break;
-	// 			}
-	// 		}
-	// 	if (uses != null)
-	// 		for (Node u : uses) {
-	// 			if (!u.getCurrentValue()) {
-	// 				usev = false;
-	// 				break;
-	// 			}
-	// 		}
-	// 	boolean pu = predv && usev;
-	// 	if (stmtv) {// if the statement is written correctly.
-	// 		if (defv && pu)
-	// 			return ap_HIGH;
-	// 		if (!defv && !pu) {
-	// 			if (hasUNKoperator)
-	// 				return ap_MEDIUM;
-	// 			return ap_HIGH;
-	// 		}
-	// 		if (!defv && pu)
-	// 			return ap_LOW;
-	// 		if (defv && !pu) {
-	// 			if (hasUNKoperator)
-	// 				return ap_MEDIUM;
-	// 			return ap_LOW;
-	// 		}
-	// 	} else {
-	// 		if (defv && pu) {
-	// 			if (hasUNKoperator)
-	// 				return ap_MEDIUM;
-	// 			return ap_LOW;
-	// 		}
-	// 		if (!defv && !pu) {
-	// 			if (hasUNKoperator)
-	// 				return ap_MEDIUM;
-	// 			return ap_HIGH;
-	// 		}
-	// 		if (!defv && pu) {
-	// 			if (hasUNKoperator)
-	// 				return ap_MEDIUM;
-	// 			return ap_HIGH;
-	// 		}
-	// 		if (defv && !pu) {
-	// 			if (hasUNKoperator)
-	// 				return ap_MEDIUM;
-	// 			return ap_LOW;
-	// 		}
-	// 		// if (!defv) {
-	// 		// if (hasUNKoperator)
-	// 		// return MEDIUM;
-	// 		// return HIGH;
-	// 		// }
-	// 		// // else: def = true
-	// 		// else if (pu) {
-	// 		// if (hasUNKoperator)
-	// 		// return MEDIUM;
-	// 		// return LOW;
-	// 		// }
-	// 		// // def = true stmt = false use = false
-	// 		// return LOW;// TODO should be medium when using certain ops.
-	// 	}
-	// 	return ap_MEDIUM;
-	// }
 
 	public void print(MyWriter lgr) {
 

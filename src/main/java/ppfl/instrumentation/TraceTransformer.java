@@ -37,6 +37,7 @@ import ppfl.ProfileUtils;
 import ppfl.WriterUtils;
 import ppfl.instrumentation.opcode.InvokeInst;
 import ppfl.instrumentation.opcode.OpcodeInst;
+import javassist.bytecode.LineNumberAttribute;
 
 public class TraceTransformer implements ClassFileTransformer {
 
@@ -220,104 +221,104 @@ public class TraceTransformer implements ClassFileTransformer {
 	}
 
 	protected byte[] transformBody(String classname) {
-		byte[] byteCode = null;
-		classname = classname.replace("/", ".");
-		debugLogger.write(String.format("[Agent] Transforming class %s", this.targetClassName));
+    byte[] byteCode = null;
+    // 统一用点号形式
+    classname = classname.replace("/", ".");
+    // 日志里也用真正的类名，避免 targetClassName 偶尔不一致
+    debugLogger.write(String.format("[Agent] Transforming class %s", classname));
 
-		if (useCachedClass) {
-			String classcachefolder = "trace/classcache/";
-			File file = new File(classcachefolder);
-			if (!file.exists()) {
-				file.mkdirs();
-			}
-			File classcache = new File(classcachefolder, classname + ".log");
-			if (!this.simpleLog && classcache.exists()) {
-				// debugLogger.writeln("Cache loaded:" + this.targetClassName);
-				try {
-					return java.nio.file.Files.readAllBytes(classcache.toPath());
-				} catch (IOException e) {
-					// TODO Auto-generated catch block
-					e.printStackTrace();
-				}
-			}
-		}
+    // ===================== 1. 读取缓存（若开启） =====================
+    if (useCachedClass) {
+        String classcachefolder = "trace/classcache/";
+        File folder = new File(classcachefolder);
+        if (!folder.exists()) {
+            folder.mkdirs();
+        }
+        File classcache = new File(folder, classname + ".log");
+        if (!this.simpleLog && classcache.exists()) {
+            try {
+                byte[] cached = java.nio.file.Files.readAllBytes(classcache.toPath());
+                // 防御：缓存文件存在但内容为空时，不要继续用它
+                if (cached != null && cached.length > 0) {
+                    return cached;
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+                // 读缓存失败就当没缓存，用正常插桩流程
+            }
+        }
+    }
 
-		if (!this.simpleLog) {
-			this.setLogger(classname);
-			setSourceFile(classname);
-			setStaticInitFile(classname);
-		}
+    // ===================== 2. 非 simpleLog 下初始化 logger 等 =====================
+    if (!this.simpleLog) {
+        this.setLogger(classname);
+        setSourceFile(classname);
+        setStaticInitFile(classname);
+    }
 
-		try {
-			ClassPool cp = ClassPool.getDefault();
-			CtClass cc = cp.get(classname);
-			// if (cc.getGenericSignature() != null) {
-			// return cc.toBytecode();
-			// }
-			List<MethodInfo> methods = new ArrayList<>();
-			// methods.addAll(cc.getClassFile().getMethods());
+    // ===================== 3. 真正的插桩逻辑 =====================
+    try {
+        ClassPool cp = ClassPool.getDefault();
+        CtClass cc = cp.get(classname);
 
-			if (!this.simpleLog) {
-				MethodInfo staticInit = cc.getClassFile().getStaticInitializer();
-				if (staticInit != null) {
-					getStaticInitializerInfo(staticInit, cc);
-				}
-			}
-			if (!cc.getClassFile().getMethods().isEmpty() || cc.getClassFile().getSuperclass() != null) {
-				writeWhatIsTraced("\n" + classname + "::");
-			}
+        if (!this.simpleLog) {
+            MethodInfo staticInit = cc.getClassFile().getStaticInitializer();
+            if (staticInit != null) {
+                getStaticInitializerInfo(staticInit, cc);
+            }
+        }
 
-			boolean instrumentJunit = true;// evaluation switch
-			for (MethodInfo m : cc.getClassFile().getMethods()) {
-				if (instrumentJunit && cc.getName().startsWith("junit") && !m.getName().startsWith("assert")) {
-					continue;
-				}
-				if (!m.isStaticInitializer()) {
-					writeWhatIsTraced(m.getName() + "#" + m.getDescriptor() + ",");
-					transformBehavior(m, cc);
-				}
-			}
-			// dump class inheritance
-			String superClassName = cc.getClassFile().getSuperclass();
-			if (superClassName != null)
-				writeWhatIsTraced(superClassName + "#" + "SuperClass");
+        if (!cc.getClassFile().getMethods().isEmpty() || cc.getClassFile().getSuperclass() != null) {
+            writeWhatIsTraced("\n" + classname + "::");
+        }
 
-			// for (CtMethod cm : cc.getDeclaredMethods()) {
-			// methods.add(cm.getMethodInfo());
-			// }
-			// for (CtConstructor ccon : cc.getDeclaredConstructors()) {
-			// methods.add(ccon.getMethodInfo());
-			// }
-			// for (MethodInfo m : methods) {
-			// // if (!this.simpleLog && m.isStaticInitializer()) {
-			// // continue;
-			// // }
-			// String longname = m.getName() + "#" + m.getDescriptor();
-			// if (!transformedMethods.contains(longname)) {
-			// transformedMethods.add(longname);
-			// writeWhatIsTraced(longname + ",");
-			// transformBehavior(m, cc);
-			// }
-			// }
+        boolean instrumentJunit = true; // evaluation switch
+        for (MethodInfo m : cc.getClassFile().getMethods()) {
+            // 跳过 junit 自身大部分方法
+            if (instrumentJunit && cc.getName().startsWith("junit") && !m.getName().startsWith("assert")) {
+                continue;
+            }
+            if (!m.isStaticInitializer()) {
+                writeWhatIsTraced(m.getName() + "#" + m.getDescriptor() + ",");
+                transformBehavior(m, cc);
+            }
+        }
 
-			byteCode = cc.toBytecode();
-			cc.detach();
+        // dump class inheritance
+        String superClassName = cc.getClassFile().getSuperclass();
+        if (superClassName != null) {
+            writeWhatIsTraced(superClassName + "#" + "SuperClass");
+        }
 
-		} catch (Exception e) {
-			System.out.println(e);
-			// debugLogger.error("[Bug]bytecode error", e);
-		}
-		if (!this.simpleLog && useCachedClass) {
-			try {
-				String classcachefolder = "trace/classcache/";
-				java.nio.file.Files.write(Paths.get(classcachefolder, classname + ".log"), byteCode);
-			} catch (IOException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			}
-		}
-		return byteCode;
-	}
+        // 生成插桩后的字节码
+        byteCode = cc.toBytecode();
+        cc.detach();
+
+    } catch (Exception e) {
+        // 这里非常关键：插桩失败时不要继续往下写缓存，更不要让 JVM 崩掉
+        System.err.println("[Agent] bytecode transform failed for " + classname);
+        e.printStackTrace();
+        // 告诉 Instrumentation：“我放弃修改这个类，让你用原始字节码吧”
+        return null;
+    }
+
+    // ===================== 4. 写缓存（若开启） =====================
+    if (!this.simpleLog && useCachedClass) {
+        if (byteCode != null) {
+            try {
+                String classcachefolder = "trace/classcache/";
+                java.nio.file.Files.write(Paths.get(classcachefolder, classname + ".log"), byteCode);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        } else {
+            // 按理说走到这里 byteCode 不应该是 null，防御性信息打印
+            System.err.println("[Agent] byteCode is null after transform for " + classname + ", skip caching.");
+        }
+    }
+
+    return byteCode;
+}
 
 	private void getStaticInitializerInfo(MethodInfo m, CtClass cc) throws BadBytecode {
 		MethodInfo mi = m;
@@ -354,56 +355,61 @@ public class TraceTransformer implements ClassFileTransformer {
 
 	}
 
-	private void transformBehavior(MethodInfo m, CtClass cc) throws NotFoundException, BadBytecode {
-		// hello in console
-		// debugLogger.writeln("%s::%s", cc.getName(), m.getName());
+    private void transformBehavior(MethodInfo m, CtClass cc) throws NotFoundException, BadBytecode {
+        // 这里的 m 就是当前方法的 MethodInfo
+        MethodInfo mi = m;
+        CodeAttribute ca = mi.getCodeAttribute();
+        // 对于 abstract / native 方法，可能没有 CodeAttribute，直接跳过
+        if (ca == null) {
+            return;
+        }
 
-		// if (!(m instanceof CtMethod)) {
-		// return;
-		// }
+        // 常量池 & 回调索引
+        ConstPool constp = mi.getConstPool();
+        CallBackIndex cbi = new CallBackIndex(constp, traceWriter);
 
-		// get iterator
-		// MethodInfo mi = m.getMethodInfo();
-		MethodInfo mi = m;
-		CodeAttribute ca = mi.getCodeAttribute();
+        // ===========================
+        // 1. 字节码级插桩（详细 trace 模式）
+        // ===========================
+        if (!this.simpleLog) {
+            // 对方法体逐条指令插桩（内部会往 traceWriter / sourceWriter 写日志）
+            instrumentByteCode(cc, mi, ca, constp, cbi);
 
-		// add constants to constpool.
-		// index will be used during instrumentation.
-		ConstPool constp = mi.getConstPool();
-		CallBackIndex cbi = new CallBackIndex(constp, traceWriter);
+            // 在方法入口处插入一条日志，打印 "###Class::method"
+            CodeIterator ci = ca.iterator();
+            String longname = String.format("%n###%s::%s", cc.getName(), mi.getName());
+            int instpos   = ci.insertGap(6);
+            int instindex = constp.addStringInfo(longname);
 
-		if (!this.simpleLog)
-			instrumentByteCode(cc, mi, ca, constp, cbi);
-		// log method name at the beginning of this method.
-		if (!this.simpleLog) {
-			CodeIterator ci = ca.iterator();
-			String longname = String.format("%n###%s::%s", cc.getName(), m.getName());
-			int instpos = ci.insertGap(6);
-			int instindex = constp.addStringInfo(longname);
+            // ldc_w <longname>
+            ci.writeByte(19, instpos);          // 19 == Opcode.LDC_W
+            ci.write16bit(instindex, instpos + 1);
+            // invokestatic CallBack.logString(...)
+            ci.writeByte(184, instpos + 3);     // 184 == Opcode.INVOKESTATIC
+            ci.write16bit(cbi.logstringindex, instpos + 4);
+        }
+        // ===========================
+        // 2. simpleLog 模式：旧的 ProfileUtils 逻辑（SMARTFL 原本就有）
+        // ===========================
+        else {
+            ProfileUtils.init(constp, traceWriter);
+            CodeIterator ci = ca.iterator();
+            String longname = String.format("%s::%s", cc.getName(), mi.getName());
+            ProfileUtils.logMethodName(ci, longname, constp);
+        }
 
-			ci.writeByte(19, instpos);// ldc_w
-			ci.write16bit(instindex, instpos + 1);
-			ci.writeByte(184, instpos + 3);// invokestatic
-			ci.write16bit(cbi.logstringindex, instpos + 4);
-		}
-		if (this.simpleLog) {
-			ProfileUtils.init(constp, traceWriter);
-			CodeIterator ci = ca.iterator();
-			String longname = String.format("%s::%s", cc.getName(), m.getName());
-			ProfileUtils.logMethodName(ci, longname, constp);
-		}
+        // 重新计算 max stack，保证插桩后的字节码栈深度正确
+        ca.computeMaxStack();
 
-		// not sure if this is necessary.
-		ca.computeMaxStack();
-		// flushing buffer
-		if (!this.simpleLog) {
-			try {
-				sourceWriter.flush();
-			} catch (IOException e) {
-				e.printStackTrace();
-			}
-		}
-	}
+        // 刷新 sourceWriter（只刷新，不再写入任何自定义 [LINE_TABLE] 内容）
+        if (!this.simpleLog && sourceWriter != null) {
+            try {
+                sourceWriter.flush();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+    }
 
 	private void instrumentByteCode(CtClass cc, MethodInfo mi, CodeAttribute ca, ConstPool constp, CallBackIndex cbi)
 			throws BadBytecode {
@@ -474,25 +480,43 @@ public class TraceTransformer implements ClassFileTransformer {
 	}
 
 	@Override
-	public byte[] transform(ClassLoader loader, String className, Class<?> classBeingRedefined,
-			ProtectionDomain protectionDomain, byte[] classfileBuffer) throws IllegalClassFormatException {
-		try {
-			byte[] byteCode = classfileBuffer;
-			// TODO modify here to transform all classes.
-			String finalTargetClassName = this.targetClassName.replace(".", "/"); // replace . with /
-			if (className == null || !className.equals(finalTargetClassName) || loader == null
-					|| !loader.equals(targetClassLoader)) {
-				return byteCode;
-			}
-			return transformBody(className);
-			// return transformBody(loader, className, classBeingRedefined,
-			// protectionDomain, classfileBuffer);
-		} catch (Exception e) {
-			// debugLogger.error("[Bug]Exception", e);
-			e.printStackTrace();
-			return null;
-		}
-	}
+    public byte[] transform(ClassLoader loader, String className, Class<?> classBeingRedefined,
+                            ProtectionDomain protectionDomain, byte[] classfileBuffer) throws IllegalClassFormatException {
+        try {
+            byte[] byteCode = classfileBuffer;
+
+            boolean hit = false;
+            if (className != null) {
+                String[] targets = this.targetClassName.split(":");
+                for (String t : targets) {
+                    t = t.trim();
+                    if (t.isEmpty()) continue;
+                    String finalTargetClassName = t.replace(".", "/");
+                    if (className.equals(finalTargetClassName)) {
+                        hit = true;
+                        break;
+                    }
+                }
+            }
+
+            // 只按类名过滤；不再限制 loader 必须等于某一个 targetClassLoader
+            if (!hit || loader == null) {
+                return byteCode;
+            }
+
+//            System.out.println("[DEBUG-transform] className = " + className
+//                    + ", loader=" + loader.getClass().getName());
+
+            // 可选：更新 targetClassLoader，方便以后调试/使用
+            this.targetClassLoader = loader;
+
+            return transformBody(className);
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
 
 	private void setLogger(String clazzname) {
 		// MDC.put("sourcefile", clazzname);

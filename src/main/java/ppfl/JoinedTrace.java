@@ -72,10 +72,15 @@ public class JoinedTrace {
     // this.setUpTraces.add(t);
   }
 
-  private boolean getD4jTestState(String fullname) {
-    assert (d4jMethodNames.contains(fullname));
-    return !d4jTriggerTestNames.contains(fullname);
-  }
+    private boolean getD4jTestState(String fullname) {
+        if (!d4jMethodNames.contains(fullname)) {
+            System.err.println(
+                    "[JoinedTrace][WARN] test name not found in d4jMethodNames: "
+                            + fullname + " (treat as PASS)");
+            return true; // 默认为通过
+        }
+        return !d4jTriggerTestNames.contains(fullname);
+    }
 
   public JoinedTrace(Set<String> d4jMethodNames, Set<String> d4jTriggerTestNames, Set<TraceDomain> tracedDomain) {
     this.d4jMethodNames = d4jMethodNames;
@@ -121,46 +126,52 @@ public class JoinedTrace {
     parseToInfo();
   }
 
-  private void parseSepFile(File f, String name) {
-    String suffix = ".log";
-    if (name.endsWith(suffix))
-      name = name.substring(0, name.length() - suffix.length());
-    int index = name.lastIndexOf('.');
-    String fullname = name.substring(0, index) + "::" + name.substring(index + 1);
-    if (getD4jTestState(fullname) && f.length() > MAX_FILE_LIMIT) {
-      return;
-    }
-    // Lang-6
-    // if (!fullname.endsWith("testMath221"))
-    // return;
-    this.addTraceChunk(fullname);
-    try (BufferedReader reader = new BufferedReader(new FileReader(f))) {
-      String delimiterPrefix = "###";
-      String t = null;
-      while ((t = reader.readLine()) != null) {
-        if (t.isEmpty()) {
-          continue;
+    private void parseSepFile(File f, String name) {
+        String suffix = ".log";
+        if (name.endsWith(suffix)) {
+            name = name.substring(0, name.length() - suffix.length());
         }
-        if (t.startsWith(delimiterPrefix)) {
-          // System.out.println(t);
-          t = t.substring(delimiterPrefix.length());
-          // if (isSetUp(t)) {
-          // this.addSetUp(t);
-          // }
-          if (isD4jTestMethod(t)) {
-            // this.addTraceChunk(t);
-          }
-          if (t.startsWith("RET@")) {
-            this.addSingleTrace(t);
-          }
-        } else {
-          this.addSingleTrace(t);
+
+        // === 关键修改：按“第一个 .”分割，和 make_test_name_for_oracle 完全一致 ===
+        int index = name.indexOf('.');
+        if (index < 0) {
+            System.err.println("[JoinedTrace][WARN] unexpected log filename (no '.'): " + name + ", skip.");
+            return;
         }
-      }
-    } catch (IOException e) {
-      e.printStackTrace();
+        String cls = name.substring(0, index);
+        String meth = name.substring(index + 1);
+        String fullname = cls + "::" + meth;  // 例如 ElevatorSystem::Elevator_test53
+
+        // 保留原来的“大文件跳过”逻辑
+        if (getD4jTestState(fullname) && f.length() > MAX_FILE_LIMIT) {
+            return;
+        }
+
+        this.addTraceChunk(fullname);
+
+        try (BufferedReader reader = new BufferedReader(new FileReader(f))) {
+            String delimiterPrefix = "###";
+            String t = null;
+            while ((t = reader.readLine()) != null) {
+                if (t.isEmpty()) {
+                    continue;
+                }
+                if (t.startsWith(delimiterPrefix)) {
+                    t = t.substring(delimiterPrefix.length());
+                    if (isD4jTestMethod(t)) {
+                        // this.addTraceChunk(t);
+                    }
+                    if (t.startsWith("RET@")) {
+                        this.addSingleTrace(t);
+                    }
+                } else {
+                    this.addSingleTrace(t);
+                }
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
-  }
 
   // this could be memory-unfriendly.
   // some pruning will be done here.

@@ -65,7 +65,7 @@ public class GraphBuilder {
     }
 
     String checkoutbase = getCheckoutBase();
-    String whatIsTracedLog = String.format("%s/%s/%s/trace/logs/mytrace/traced.source.log", checkoutbase, project, id);
+    String whatIsTracedLog = String.format("%s/%s/%s/trace/logs/mytrace/traced.source.log", checkoutbase, project, id); // //静态路（来源于插桩生成的 source 日志）
     pgraph.parseWhatIsTracedLog(whatIsTracedLog);
 
     // if (relevantClasses != null) {
@@ -76,7 +76,7 @@ public class GraphBuilder {
     // }
     // }
     // }
-    String sourcebase = String.format("%s/%s/%s/trace/logs/mytrace/", checkoutbase, project, id);
+    String sourcebase = String.format("%s/%s/%s/trace/logs/mytrace/", checkoutbase, project, id);  //静态路（来源于插桩生成的 source 日志）
     File tracefolder = new File(sourcebase);
     File[] fs = tracefolder.listFiles();
     for (File f : fs) {
@@ -121,7 +121,7 @@ public class GraphBuilder {
     // long endTime = System.currentTimeMillis();
     // long thetime = endTime-startTime;
     // System.out.println("idom time is "+ thetime);
-    String folder = String.format("%s/%s/%s/trace/logs/run/", checkoutbase, project, id);
+    String folder = String.format("%s/%s/%s/trace/logs/run/", checkoutbase, project, id); //动态路（来源于运行时 run 日志）
     String sourcefolder = String.format("%s/%s/%s/trace/logs/mytrace/", checkoutbase, project, id);
     pgraph.parseFolder(folder, sourcefolder, usesimple);
     System.out.println("Parse complete");
@@ -134,7 +134,7 @@ public class GraphBuilder {
     long startTime = System.currentTimeMillis();
     ByteCodeGraph pgraph = new ByteCodeGraph();
 
-    pgraph.setAutoOracle(true);
+    pgraph.setAutoOracle(true); //用自动 Oracle（通常是基于测试通过/失败作为观测）
     pgraph.setTraceAllClassed(false);
     boolean usesimple = false;
     if (args.length >= 2) {
@@ -146,7 +146,7 @@ public class GraphBuilder {
     // pgraph.initD4jProject();
     //
     // pgraph.printgraph();
-    pgraph.check_bp(true);
+    pgraph.check_bp(true); //在图上跑一次 Belief Propagation（BP） 做推断，得出可疑度/后验概率等
     System.out.println("BP finished for " + args[0] + args[1]);
 
     // shutdownhook not working when using exec:java.
@@ -160,7 +160,7 @@ public class GraphBuilder {
         bWriter.write(args[1] + ":" + thetime / 1000.0 + "\n");
         bWriter.flush();
       } catch (IOException e) {
-  
+
       }
     }
 

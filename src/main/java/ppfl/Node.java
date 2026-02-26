@@ -411,7 +411,12 @@ public class Node {
 
 	public void bpPrintProb(MyWriter lgr) {
 		// if (!use_ap)
-		lgr.writeln("%s prob_bp = %.20f", this.getPrintName(), bp_getprob());
+		//lgr.writeln("%s prob_bp = %.20f", this.getPrintName(), bp_getprob());
+        lgr.writeln("%s prob_bp = %.20f, edges=%d, obs=%b",
+                this.getPrintName(),
+                bp_getprob(),
+                this.edges.size(),
+                this.obs);
 		// else
 		// lgr.writeln("%s prob_bp = %.20s", this.getPrintName(), ap_bp_getprob());
 	}

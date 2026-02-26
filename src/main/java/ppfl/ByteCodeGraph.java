@@ -31,7 +31,10 @@ import ppfl.instrumentation.TraceDomain;
 import ppfl.instrumentation.opcode.OpcodeInst;
 
 public class ByteCodeGraph {
-
+    public int debugFactorCount = 0;
+    public int debugObservedVars = 0;
+    public int debugMissingInsts = 0;     // 动态 trace 行在静态图中找不到的 inst 数
+    public long debugAttachedEvents = 0;
 	private MyWriter graphLogger = WriterUtils.getWriter("Debugger");
 	private MyWriter resultLogger = WriterUtils.getWriter("Debugger");
 	private MyWriter reduceLogger = WriterUtils.getWriter("Debugger");
@@ -226,6 +229,10 @@ public class ByteCodeGraph {
 		return stackframe.peek();
 	}
 
+    public void setResultFilter(boolean value) {
+        this.resultFilter = value;
+    }
+
 	private void emptyFrame() {
 		this.stackframe.clear();
 	}
@@ -298,42 +305,65 @@ public class ByteCodeGraph {
 	// the stack for stores in branchs
 	private Deque<Set<Integer>> store_stack;
 
-	public void killPredStack(String thisinst) {
-		boolean willcontinue = true;
-		while (willcontinue) {
-			willcontinue = false;
-			if (this.predstack.peek() != null) {
-				String stmtName = this.predstack.peek().getStmtName();
-				// System.out.println("in kill "+stmtName);
-				if (post_idom.get(stmtName).equals(thisinst)) {
-					Node curPred = this.predstack.pop();
-					StmtNode curPredStmt = curPred.stmt;
-					Set<Integer> stores = null;
-					// if (!this.store_stack.isEmpty())
-					stores = this.store_stack.pop();
-					// System.out.println("kill "+stores);
-					boolean unexecuted_complement = true; //evaluation switch
-					if (unexecuted_complement) {
-						if (stores != null) {
-							// StmtNode curStmt = curPred.stmt;
-							for (Integer i : stores) {
-								StmtNode curStmt = getUnexeStmt(curPredStmt, i);
-								Node usenode = getLoadNodeAsUse(i);
-								if (usenode == null) {
-									// System.out.println("null use " + i);
-									// TODO this can be unsound?
-									continue;
-								}
-								Node defnode = addNewVarNode(i, curStmt);
-								buildFactor(defnode, curPred, usenode, null, curStmt);
-							}
-						}
-					}
-					willcontinue = true;
-				}
-			}
-		}
-	}
+    public void killPredStack(String thisinst) {
+        if (thisinst == null) {
+            return;
+        }
+
+        boolean willcontinue = true;
+        while (willcontinue) {
+            willcontinue = false;
+
+            // predstack 为空，直接退出循环
+            if (this.predstack.isEmpty()) {
+                break;
+            }
+
+            Node top = this.predstack.peek();
+            if (top == null) {
+                break;
+            }
+            String stmtName = top.getStmtName();
+            if (stmtName == null) {
+                // 没有合法的语句名，没法做支配判断，直接退出
+                break;
+            }
+
+            // 关键：post_idom 可能没有这个 key，要先取出来再比较
+            String idom = post_idom.get(stmtName);
+            if (idom == null || !idom.equals(thisinst)) {
+                // 要么没有支配信息，要么当前 inst 不是它的直接支配者 → 不再继续 kill
+                break;
+            }
+
+            // 到这里说明 top 的直接支配者就是当前 thisinst，可以弹栈并构造“未执行补图”
+            Node curPred = this.predstack.pop();
+            StmtNode curPredStmt = curPred.stmt;
+
+            Set<Integer> stores = null;
+            if (!this.store_stack.isEmpty()) {
+                stores = this.store_stack.pop();
+            }
+
+            boolean unexecuted_complement = true; // evaluation switch
+            if (unexecuted_complement && stores != null && curPredStmt != null) {
+                for (Integer i : stores) {
+                    StmtNode curStmt = getUnexeStmt(curPredStmt, i);
+                    Node usenode = getLoadNodeAsUse(i);
+                    if (usenode == null) {
+                        // System.out.println("null use " + i);
+                        // TODO: 这里保持原来的“跳过”语义
+                        continue;
+                    }
+                    Node defnode = addNewVarNode(i, curStmt);
+                    buildFactor(defnode, curPred, usenode, null, curStmt);
+                }
+            }
+
+            // 继续检查下一个可能被当前节点支配的前驱
+            willcontinue = true;
+        }
+    }
 
 	public ByteCodeGraph() {
 		factornodes = new ArrayList<>();
@@ -391,30 +421,8 @@ public class ByteCodeGraph {
 				// " layout.weight: 10;"+
 				"}" + "edge.def {" + "	fill-color: green;" + "}" + "edge.use {" + "	fill-color: blue;" + "}" + "edge.pred {"
 				+ "	fill-color: yellow;" + "}" + "edge.stmt {" + "	fill-color: black;" + "}";
-		// viewgraph.setAttribute("ui.stylesheet", styleSheet);
-		// viewgraph.setAttribute("ui.quality");
-		// viewgraph.setAttribute("ui.antialias");
 		Interpreter.init();
 	}
-
-	// public void addviewlabel() {
-	// for (Node n : nodes) {
-	// // org.graphstream.graph.Node thenode = viewgraph.getNode(n.getPrintName());
-	// if (thenode != null)
-	// thenode.setAttribute("ui.label", " prob_bp = " + (double)
-	// Math.round(n.bp_getprob() * 1000) / 1000);
-	// // thenode.setAttribute("ui.label", n.getPrintName() + " prob_bp = " +
-	// // n.bp_getprob());
-	// }
-	// for (StmtNode n : stmts) {
-	// // org.graphstream.graph.Node thenode = viewgraph.getNode(n.getPrintName());
-	// if (thenode != null)
-	// thenode.setAttribute("ui.label", " prob_bp = " + (double)
-	// Math.round(n.bp_getprob() * 1000) / 1000);
-	// // thenode.setAttribute("ui.label", n.getPrintName() + " prob_bp = " +
-	// // n.bp_getprob());
-	// }
-	// }
 
 	public void setMaxLoop(int i) {
 		this.max_loop = i;
@@ -481,259 +489,304 @@ public class ByteCodeGraph {
 		}
 	}
 
-	public void parsesource(String sourcefilename) {
-		Map<String, String> assistnamemap = new HashMap<>();
-		Map<String, List<String>> _predataflowmap = new HashMap<>();
-		Map<String, List<String>> _postdataflowmap = new HashMap<>();
-		Set<String> _instset = new HashSet<>();
-		try (BufferedReader reader = new BufferedReader(new FileReader(sourcefilename))) {
-			String t;
-			Set<String> nonextinsts = new HashSet<>();
-			if (gotoNoBranch) {
-				nonextinsts.add("goto_w");
-				nonextinsts.add("goto");
-			}
-			nonextinsts.add("return");
-			nonextinsts.add("areturn");
-			nonextinsts.add("dreturn");
-			nonextinsts.add("freturn");
-			nonextinsts.add("ireturn");
-			nonextinsts.add("lreturn");
-			nonextinsts.add("athrow");
-			// TODO consider throw
-			Set<String> switchinsts = new HashSet<>();
-			switchinsts.add("tableswitch");
-			switchinsts.add("lookupswitch");
-			while ((t = reader.readLine()) != null) {
-				if (t.isEmpty() || t.startsWith("###"))
-					continue;
-				ParseInfo info = new ParseInfo(t);
-				String thisinst = info.getvalue("lineinfo");
-				// the entry of a method
-				if (info.byteindex == 0) {
-					inset.add(thisinst);
-				}
-				Integer storen = info.getintvalue("store");
-				if (storen != null)
-					store_num.put(thisinst, storen);
-				// String classandmethod = info.traceclass + "#" + info.tracemethod;
-				String classandmethod = info.domain.toString();
-				String assistkey = classandmethod + info.byteindex;
-				assistnamemap.put(assistkey, thisinst);
-				List<String> theedges = new ArrayList<>();
-				// deal with switch
-				if (switchinsts.contains(info.opcode)) {
-					Integer defaultbyte = info.getintvalue("default");
-					if (defaultbyte != null) {
-						String defaultinst = classandmethod + (defaultbyte.intValue() + info.byteindex);
-						theedges.add(defaultinst);
-					}
-					String switchlist = info.getvalue("switch");
-					if (switchlist != null) {
-						String[] switchterms = switchlist.split(";");
-						for (String switchterm : switchterms) {
-							String jumpinst = classandmethod
-									+ (Integer.valueOf(switchterm.split(":")[1]).intValue() + info.byteindex);
-							theedges.add(jumpinst);
-						}
-					}
-					_predataflowmap.put(thisinst, theedges);
-					_instset.add(thisinst);
-					continue;
-				}
-				if (!((nonextinsts.contains(info.opcode)) || ((info.opcode.equals("goto") || info.opcode.equals("goto_w"))
-						&& info.getvalue("nextinst").equals("-1")))) {
-					String nextinst = classandmethod + info.getvalue("nextinst");
-					theedges.add(nextinst);
-				}
-				Integer branchbyte = info.getintvalue("branchbyte");
-				if (branchbyte != null) {
-					String branchinst = classandmethod + (branchbyte.intValue() + info.byteindex);
-					theedges.add(branchinst);
-				}
-				if (theedges.isEmpty()) {
-					String outname = "OUT_" + classandmethod;
-					theedges.add(outname);
-					_instset.add(outname);
-					_predataflowmap.put(outname, new ArrayList<>());
-					outset.add(outname);
-				}
-				_predataflowmap.put(thisinst, theedges);
-				_instset.add(thisinst);
-			}
-		} catch (IOException e) {
-			e.printStackTrace();
-		}
-		// change the name (to include the line number)
-		for (List<String> theedges : _predataflowmap.values()) {
-			int valuelen = theedges.size();
-			for (int i = 0; i < valuelen; i++) {
-				if (assistnamemap.containsKey(theedges.get(i))) {
-					String newname = assistnamemap.get(theedges.get(i));
-					theedges.set(i, newname);
-				}
-			}
-		}
-		// init the postmap, keys including OUT_xx
-		for (String instname : _instset) {
-			List<String> theedges = new ArrayList<>();
-			_postdataflowmap.put(instname, theedges);
-		}
-		// get the postmap
-		for (Map.Entry<String, List<String>> instname : _predataflowmap.entrySet()) {
-			List<String> preedges = instname.getValue();
-			for (String prenode : preedges) {
-				// System.out.println(preedges);
-				// System.out.println(instname+"__"+prenode);
-				List<String> postedges = _postdataflowmap.get(prenode);
-				postedges.add(instname.getKey());
-			}
-		}
-		predataflowmap.putAll(_predataflowmap);
-		postdataflowmap.putAll(_postdataflowmap);
-		instset.addAll(_instset);
-		// System.out.println("size =" + postdataflowmap.size());
-		// for(String key : postdataflowmap.keySet()){
-		// System.out.println("key_"+key);
-		// System.out.println(predataflowmap.get(key));
-		// }
-	}
+    public void parsesource(String sourcefilename) {
+        Map<String, String> assistnamemap = new HashMap<>();
+        Map<String, List<String>> _predataflowmap = new HashMap<>();
+        Map<String, List<String>> _postdataflowmap = new HashMap<>();
+        Set<String> _instset = new HashSet<>();
+        try (BufferedReader reader = new BufferedReader(new FileReader(sourcefilename))) {
+            String t;
+            Set<String> nonextinsts = new HashSet<>();
+            if (gotoNoBranch) {
+                nonextinsts.add("goto_w");
+                nonextinsts.add("goto");
+            }
+            nonextinsts.add("return");
+            nonextinsts.add("areturn");
+            nonextinsts.add("dreturn");
+            nonextinsts.add("freturn");
+            nonextinsts.add("ireturn");
+            nonextinsts.add("lreturn");
+            nonextinsts.add("athrow");
+            // TODO consider throw
+            Set<String> switchinsts = new HashSet<>();
+            switchinsts.add("tableswitch");
+            switchinsts.add("lookupswitch");
 
-	private Deque<String> reverse_postorder = new ArrayDeque<>();
+            while ((t = reader.readLine()) != null) {
+                if (t.isEmpty() || t.startsWith("###"))
+                    continue;
+                ParseInfo info = new ParseInfo(t);
+                String thisinst = info.getvalue("lineinfo");
+                // the entry of a method
+                if (info.byteindex == 0) {
+                    inset.add(thisinst);
+                }
+                Integer storen = info.getintvalue("store");
+                if (storen != null)
+                    store_num.put(thisinst, storen);
+
+                // String classandmethod = info.traceclass + "#" + info.tracemethod;
+                String classandmethod = info.domain.toString();
+                String assistkey = classandmethod + info.byteindex;
+                assistnamemap.put(assistkey, thisinst);
+
+                List<String> theedges = new ArrayList<>();
+
+                // deal with switch
+                if (switchinsts.contains(info.opcode)) {
+                    Integer defaultbyte = info.getintvalue("default");
+                    if (defaultbyte != null) {
+                        String defaultinst = classandmethod + (defaultbyte.intValue() + info.byteindex);
+                        theedges.add(defaultinst);
+                    }
+                    String switchlist = info.getvalue("switch");
+                    if (switchlist != null) {
+                        String[] switchterms = switchlist.split(";");
+                        for (String switchterm : switchterms) {
+                            String jumpinst = classandmethod
+                                    + (Integer.valueOf(switchterm.split(":")[1]).intValue() + info.byteindex);
+                            theedges.add(jumpinst);
+                        }
+                    }
+                    _predataflowmap.put(thisinst, theedges);
+                    _instset.add(thisinst);
+                    continue;
+                }
+
+                if (!((nonextinsts.contains(info.opcode)) || ((info.opcode.equals("goto") || info.opcode.equals("goto_w"))
+                        && info.getvalue("nextinst").equals("-1")))) {
+                    String nextinst = classandmethod + info.getvalue("nextinst");
+                    theedges.add(nextinst);
+                }
+                Integer branchbyte = info.getintvalue("branchbyte");
+                if (branchbyte != null) {
+                    String branchinst = classandmethod + (branchbyte.intValue() + info.byteindex);
+                    theedges.add(branchinst);
+                }
+                if (theedges.isEmpty()) {
+                    String outname = "OUT_" + classandmethod;
+                    theedges.add(outname);
+                    _instset.add(outname);
+                    _predataflowmap.put(outname, new ArrayList<>());
+                    outset.add(outname);
+                }
+                _predataflowmap.put(thisinst, theedges);
+                _instset.add(thisinst);
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+        // === 新增 1：确保 _instset 中每个点在 _predataflowmap 中都有一个 List（避免后续 dfssearch 拿到 null） ===
+        for (String instname : _instset) {
+            if (!_predataflowmap.containsKey(instname)) {
+                _predataflowmap.put(instname, new ArrayList<String>());
+            }
+        }
+
+        // change the name (to include the line number)
+        for (List<String> theedges : _predataflowmap.values()) {
+            int valuelen = theedges.size();
+            for (int i = 0; i < valuelen; i++) {
+                if (assistnamemap.containsKey(theedges.get(i))) {
+                    String newname = assistnamemap.get(theedges.get(i));
+                    theedges.set(i, newname);
+                }
+            }
+        }
+
+        // init the postmap, keys including OUT_xx
+        for (String instname : _instset) {
+            List<String> theedges = new ArrayList<>();
+            _postdataflowmap.put(instname, theedges);
+        }
+
+        // get the postmap
+        for (Map.Entry<String, List<String>> instname : _predataflowmap.entrySet()) {
+            List<String> preedges = instname.getValue();
+            for (String prenode : preedges) {
+                // System.out.println(preedges);
+                // System.out.println(instname+"__"+prenode);
+                List<String> postedges = _postdataflowmap.get(prenode);
+                // === 新增 2：防御性判空，防止异常边指向未注册节点 ===
+                if (postedges == null) {
+                    postedges = new ArrayList<>();
+                    _postdataflowmap.put(prenode, postedges);
+                }
+                postedges.add(instname.getKey());
+            }
+        }
+
+        predataflowmap.putAll(_predataflowmap);
+        postdataflowmap.putAll(_postdataflowmap);
+        instset.addAll(_instset);
+    }
+
+
+    private Deque<String> reverse_postorder = new ArrayDeque<>();
 	private Set<String> visited = new HashSet<>();
 	private Map<String, Integer> postorder = new HashMap<>();
 	private int cnt;
 
-	private void dfssearch(String inst) {
-		// visited.add(inst);
-		// List<String> thesuccs = postdataflowmap.get(inst);
-		// for (String succ : thesuccs) {
-		// if (!visited.contains(succ)) {
-		// dfssearch(succ);
-		// }
-		// }
-		// reverse_postorder.addFirst(inst);
-		// postorder.put(inst, new Integer(cnt));
-		// cnt++;
+    private void dfssearch(String inst) {
+        Deque<String> searchstack = new ArrayDeque<>();
+        searchstack.push(inst);
+        visited.add(inst);
 
-		Deque<String> searchstack = new ArrayDeque<>();
-		searchstack.push(inst);
-		visited.add(inst);
-		while (!searchstack.isEmpty()) {
-			String theinst = searchstack.peek();
-			List<String> thesuccs = postdataflowmap.get(theinst);
-			boolean isleaf = true;
-			for (String succ : thesuccs) {
-				if (!visited.contains(succ)) {
-					visited.add(succ);
-					searchstack.push(succ);
-					isleaf = false;
-				}
-			}
-			if (isleaf) {
-				reverse_postorder.addFirst(theinst);
-				postorder.put(theinst, cnt);
-				cnt++;
-				searchstack.pop();
-			}
-		}
-	}
+        while (!searchstack.isEmpty()) {
+            String theinst = searchstack.peek();
+            List<String> thesuccs = postdataflowmap.get(theinst);
 
-	private String intersect(String b1, String b2) {
-		String finger1 = b1;
-		String finger2 = b2;
-		while (!finger1.equals(finger2)) {
-			while (postorder.get(finger1).intValue() < postorder.get(finger2).intValue()) {
-				finger1 = post_idom.get(finger1);
-			}
-			while (postorder.get(finger1).intValue() > postorder.get(finger2).intValue()) {
-				finger2 = post_idom.get(finger2);
-			}
-		}
-		return finger1;
-	}
+            // 关键修复：没有后继列表就当作叶子节点
+            if (thesuccs == null || thesuccs.isEmpty()) {
+                reverse_postorder.addFirst(theinst);
+                postorder.put(theinst, cnt);
+                cnt++;
+                searchstack.pop();
+                continue;
+            }
+
+            boolean isleaf = true;
+            for (String succ : thesuccs) {
+                if (succ == null) {
+                    // 理论上不会为 null，防御一下
+                    continue;
+                }
+                if (!visited.contains(succ)) {
+                    visited.add(succ);
+                    searchstack.push(succ);
+                    isleaf = false;
+                }
+            }
+            if (isleaf) {
+                reverse_postorder.addFirst(theinst);
+                postorder.put(theinst, cnt);
+                cnt++;
+                searchstack.pop();
+            }
+        }
+    }
+
+    private String intersect(String b1, String b2) {
+        String finger1 = b1;
+        String finger2 = b2;
+
+        while (!finger1.equals(finger2)) {
+            Integer po1 = postorder.get(finger1);
+            Integer po2 = postorder.get(finger2);
+
+            // 防御性：如果某个 finger 根本不在 postorder 里，直接返回另一个
+            if (po1 == null || po2 == null) {
+                return finger1; // 或者 finger2，看你偏好，但总比 NPE 强
+            }
+
+            while (po1.intValue() < po2.intValue()) {
+                String idom1 = post_idom.get(finger1);
+                if (idom1 == null || "Undefined".equals(idom1)) {
+                    // 走到一个没有 idom 的结点，直接停止收缩
+                    return finger1;
+                }
+                finger1 = idom1;
+                po1 = postorder.get(finger1);
+                if (po1 == null) {
+                    return finger1;
+                }
+            }
+
+            while (po1.intValue() > po2.intValue()) {
+                String idom2 = post_idom.get(finger2);
+                if (idom2 == null || "Undefined".equals(idom2)) {
+                    return finger2;
+                }
+                finger2 = idom2;
+                po2 = postorder.get(finger2);
+                if (po2 == null) {
+                    return finger2;
+                }
+            }
+        }
+        return finger1;
+    }
 
 	// Keith D. Cooper algorithm
-	public void get_idom() {
-		cnt = 1;
-		reverse_postorder = new ArrayDeque<>();
-		visited = new HashSet<>();
-		postorder = new HashMap<>();
-		for (String outname : outset) {
-			dfssearch(outname);
-		}
-		for (String inst : reverse_postorder) {
-			post_idom.put(inst, "Undefined");
-		}
-		for (String outname : outset) {
-			post_idom.put(outname, outname);
-		}
-		boolean changed = true;
-		while (changed) {
-			changed = false;
-			for (String inst : reverse_postorder) {
-				if (outset.contains(inst))
-					continue;
-				List<String> thepreds = predataflowmap.get(inst);
-				int predsnum = thepreds.size();
-				int tmpmax = -1;
-				int tmpindex = 0;
-				// seems should get the pred with the max postorder
-				for (int i = 0; i < predsnum; i++) {
-					// to deal with pre_idom, some nodes can not be visited in pre order in the
-					// graph so it has no order after dfs
-					if (postorder.get(thepreds.get(i)) == null) {
-						continue;
+    public void get_idom() {
+        cnt = 1;
+        reverse_postorder = new ArrayDeque<>();
+        visited = new HashSet<>();
+        postorder = new HashMap<>();
 
-						// resultLogger.writeln("null at inst %s, pred %s\n", inst, thepreds.get(i));
-						// for(Map.Entry<String, Integer> entry : postorder.entrySet())
-						// resultLogger.writeln("key = " + entry.getKey() + ", value = " +
-						// entry.getValue());
+        // 1) DFS from all out nodes
+        for (String outname : outset) {
+            dfssearch(outname);
+        }
 
-						// for(String tmps: outset)
-						// resultLogger.writeln("outset0 %s\n", tmps);
-					}
-					if (tmpmax < postorder.get(thepreds.get(i)).intValue()) {
-						tmpmax = postorder.get(thepreds.get(i)).intValue();
-						tmpindex = i;
-					}
-				}
-				String new_idom = thepreds.get(tmpindex);
-				for (int i = 0; i < predsnum; i++) {
-					if (i == tmpindex)
-						continue;
-					String otherpred = thepreds.get(i);
-					// to deal with pre_idom, some nodes can not be visited in pre order in the
-					// graph so it has no order after dfs
-					if (post_idom.get(otherpred) == null)
-						continue;
-					if (!post_idom.get(otherpred).equals("Undefined")) {
-						new_idom = intersect(otherpred, new_idom);
-					}
-				}
-				if (!post_idom.get(inst).equals(new_idom)) {
-					post_idom.put(inst, new_idom);
-					changed = true;
-				}
-			}
-		}
-		// System.out.println("size =" + post_idom.size());
-		// for (String key : post_idom.keySet()) {
-		// System.out.println("key_" + key);
-		// System.out.println("post_idom = " + post_idom.get(key));
-		// }
-	}
+        // 2) init idom
+        post_idom = new HashMap<>();
+        for (String inst : reverse_postorder) {
+            post_idom.put(inst, "Undefined");
+        }
+        for (String outname : outset) {
+            post_idom.put(outname, outname);
+        }
+
+        boolean changed = true;
+        while (changed) {
+            changed = false;
+
+            for (String inst : reverse_postorder) {
+                if (outset.contains(inst)) {
+                    continue; // out node itself
+                }
+
+                List<String> preds = predataflowmap.get(inst);
+                if (preds == null || preds.isEmpty()) {
+                    continue;
+                }
+
+                // 1) 先从前驱中找一个 idom 已经确定的，作为初始 new_idom
+                String new_idom = null;
+                for (String p : preds) {
+                    String pidom = post_idom.get(p);
+                    if (pidom != null && !"Undefined".equals(pidom)) {
+                        // 同时要求这个前驱在 postorder 中出现过（被 DFS 访问到过）
+                        if (postorder.containsKey(p)) {
+                            new_idom = p;
+                            break;
+                        }
+                    }
+                }
+
+                if (new_idom == null) {
+                    // 说明暂时没有前驱的 idom 已经确定，先跳过这一轮，下一轮再尝试
+                    continue;
+                }
+
+                // 2) 用其它已经确定 idom 的前驱来收紧 new_idom
+                for (String p : preds) {
+                    if (p.equals(new_idom)) {
+                        continue;
+                    }
+                    String pidom = post_idom.get(p);
+                    if (pidom == null || "Undefined".equals(pidom)) {
+                        continue;
+                    }
+                    if (!postorder.containsKey(p)) {
+                        continue;
+                    }
+                    new_idom = intersect(p, new_idom);
+                }
+
+                String cur = post_idom.get(inst);
+                if (cur == null || !cur.equals(new_idom)) {
+                    post_idom.put(inst, new_idom);
+                    changed = true;
+                }
+            }
+        }
+    }
 
 	public void get_pre_idom() {
-		// for (String tmp :
-		// predataflowmap.get("org.apache.commons.lang3.ValidateTest#testNoNullElementsArray1#()V#558#60"))
-		// resultLogger.writeln("the next"+tmp);
-
-		// for(Map.Entry<String, List<String>> entry : postdataflowmap.entrySet())
-		// if(!inset.contains(entry.getKey()) && entry.getValue().size() == 0)
-		// resultLogger.writeln("key = " + entry.getKey() + ", value = " +
-		// entry.getValue().size());
-
 		Map<String, List<String>> tmp_map1 = this.predataflowmap;
 		this.predataflowmap = this.postdataflowmap;
 		this.postdataflowmap = tmp_map1;
@@ -756,35 +809,55 @@ public class ByteCodeGraph {
 		this.inset = tmp_set;
 	}
 
-	public void find_loop() {
-		for (Map.Entry<String, List<String>> entry : predataflowmap.entrySet()) {
-			String edge_start = entry.getKey();
-			for (String edge_end : entry.getValue()) {
-				String end_dom = pre_idom.get(edge_end);
-				if (end_dom != null && end_dom.equals(edge_start))
-					continue;
-				String dominator = pre_idom.get(edge_start);
-				boolean isloop = false;
-				while (dominator != null && !inset.contains(dominator)) {
-					if (dominator.equals(edge_end)) {
-						isloop = true;
-						break;
-					}
-					dominator = pre_idom.get(dominator);
-				}
-				if (isloop) {
-					LoopEdge theloop = new LoopEdge(edge_start, edge_end);
-					loopset.add(theloop);
-					// reduceLogger.writeln("start "+ edge_start + ", end " + edge_end +
-					// ", length = " + theloop.length + "\n");
-				}
-			}
-		}
-		// for(LoopEdge theloop : loopset)
-		// reduceLogger.writeln("start "+ theloop.start + ", end " + theloop.end +
-		// ", length = " + theloop.length + "\n");
+    public void find_loop() {
+        for (Map.Entry<String, List<String>> entry : predataflowmap.entrySet()) {
+            String edge_start = entry.getKey();
+            List<String> succs = entry.getValue();
+            if (succs == null || succs.isEmpty()) {
+                continue;
+            }
 
-	}
+            for (String edge_end : succs) {
+                if (edge_end == null) {
+                    continue;
+                }
+
+                // 如果 end 的直接支配点就是 start，这是一条正常前向边，跳过
+                String end_dom = pre_idom.get(edge_end);
+                if (end_dom != null && end_dom.equals(edge_start)) {
+                    continue;
+                }
+
+                String dominator = pre_idom.get(edge_start);
+                boolean isloop = false;
+                // ★ 新增：防止 pre_idom 链中出现环导致无限循环
+                Set<String> seen = new HashSet<>();
+
+                while (dominator != null && !inset.contains(dominator)) {
+                    if (!seen.add(dominator)) {
+                        // pre_idom 链中出现了环，终止，避免死循环
+                        // 你也可以打印一条 debug 日志：
+                        // System.err.println("[SPL][WARN] cycle in pre_idom chain at " + dominator);
+                        break;
+                    }
+
+                    if (dominator.equals(edge_end)) {
+                        isloop = true;
+                        break;
+                    }
+
+                    dominator = pre_idom.get(dominator);
+                }
+
+                if (isloop) {
+                    LoopEdge theloop = new LoopEdge(edge_start, edge_end);
+                    loopset.add(theloop);
+                    // 如果想看有多少个 loop，可以在这里加 debug 输出
+                    // System.out.println("[SPL][Loop] " + edge_start + " -> " + edge_end);
+                }
+            }
+        }
+    }
 
 	public void dataflow() {
 		// init the dataflow set
@@ -947,17 +1020,26 @@ public class ByteCodeGraph {
 			e.printStackTrace();
 			System.err.println("parse failed.");
 		}
-		boolean debug_compress = false;
-		for (TraceChunk tChunk : jTrace.traceList) {
-			if (debug_compress) {
-				reduceLogger.writeln("\n" + "start " + tChunk.fullname + "\n");
-				tChunk.loop_compress(loopset, reduceLogger);
-			} else {
-				tChunk.loop_compress(loopset, null);
-			}
-		}
+        boolean debug_compress = false;
+        for (TraceChunk tChunk : jTrace.traceList) {
 
-		parseJoinedTracePruned(jTrace, usesimple);
+            if (debug_compress) {
+                reduceLogger.writeln("\n" + "start " + tChunk.fullname + "\n");
+                tChunk.loop_compress(loopset, reduceLogger);
+            } else {
+                tChunk.loop_compress(loopset, null);
+            }
+
+            // === 关键：直接用 oracle 里的 FAIL 集合覆盖 testpass ===
+            boolean isFail = d4jTriggerTestNames.contains(tChunk.fullname);
+            tChunk.testpass = !isFail;
+
+            System.out.println("[DEBUG] TraceChunk: " + tChunk.fullname
+                    + ", isFail=" + isFail
+                    + ", testpass=" + tChunk.testpass);
+        }
+
+        parseJoinedTracePruned(jTrace, usesimple);
 	}
 
 	public void pruneAndParse(String tracefilename) {
@@ -1048,14 +1130,6 @@ public class ByteCodeGraph {
 	}
 
 	private void parseSingleTrace(ParseInfo pInfo, boolean debugswitch, int linec) {
-		// if (debugswitch) {
-		// try {
-		// System.in.read();
-		// } catch (IOException e) {
-		// // TODO Auto-generated catch block
-		// e.printStackTrace();
-		// }
-		// }
 		this.parseinfo = pInfo;
 		String instname = this.parseinfo.getvalue("lineinfo");
 
@@ -1063,20 +1137,12 @@ public class ByteCodeGraph {
 		if (this.solveTracedInvoke && this.tracedInvoke != null) {
 			if (matchTracedInvoke(pInfo)) {
 				if (pInfo.isReturnMsg) {
-					// actually untraced due to instrumentation bug.
-					// pop stackframe that is pushed for nothing.
-					// System.out.println("frame poped at " + linec);
-					// pInfo.debugprint();
-					// this.popStackFrame();
 					buildTracedInvoke();
 					return;
 				}
 				this.resolveTracedArgs(pInfo);
 				this.cleanTraced();
 			} else {
-				// System.out.println("skipped" + linec);
-				// System.out.println(this.tracedInvoke.getCallDomain());
-				// skip
 				return;
 			}
 		}
@@ -1139,10 +1205,6 @@ public class ByteCodeGraph {
 					this.crashedByThrow = true;
 					return;
 				}
-				// should not happen
-				// maybe quit on crash.
-				// System.out.println("Athrow is not catched!");
-				// pInfo.debugprint();
 			}
 		}
 
@@ -1161,43 +1223,40 @@ public class ByteCodeGraph {
 			return;
 		}
 
-		boolean skipFaultyFrame = false;// evaluation switch
-		// Begin with the initial testmethod.
-		this.getFrame();
-		if (skipFaultyFrame && !this.getFrame().domain.equals(this.parseinfo.domain)) {
-			return;
-		}
-		// if (!this.getFrame().domain.equals(this.parseinfo.domain)) {
-		// try {
-		// System.out.println(linec);
-		// System.in.read();
-		// } catch (IOException e) {
-		// // TODO Auto-generated catch block
-		// e.printStackTrace();
-		// }
-		// pInfo.debugprint();
-		// debugStack(this.stackframe);
-		// }
-		// Debug use
-		// System.out.println(instname);
+        boolean skipFaultyFrame = false;// evaluation switch
+        // Begin with the initial testmethod.
+        this.getFrame();
+        if (skipFaultyFrame && !this.getFrame().domain.equals(this.parseinfo.domain)) {
+            return;
+        }
 
-		killPredStack(instname);
-		if (predataflowmap.get(instname).size() > 1) {
-			// System.out.println("add set" + branch_stores.get(instname));
-			Set<Integer> stores = branch_stores.get(instname);
-			// if (stores != null)
-			store_stack.push(stores);
-		}
-		Interpreter.map[this.parseinfo.form].buildtrace(this);
+        // -------- 修改开始：对 instname / 控制流信息做健壮性检查 --------
+        if (instname != null) {
+            // 有可能这条动态指令在静态 CFG 里没有节点，这种情况下就不要动 predstack/store_stack
+            List<String> preds = predataflowmap.get(instname);
+            if (preds != null) {
+                // 只有静态图里有这个 inst 的时候才做 killPredStack 和 branch_stores 处理
+                killPredStack(instname);
 
-		// if (pInfo.linenumber == 94 && pInfo.byteindex == 0) {
-		// debugswitch = true;
-		// }
-		// debug runtime stacks
-		if (debugswitch) {
-			pInfo.debugprint();
-			debugStack(this.stackframe);
-		}
+                if (preds.size() > 1) {
+                    Set<Integer> stores = branch_stores.get(instname);
+                    if (stores != null) {
+                        store_stack.push(stores);
+                    }
+                }
+            }else {
+                // 说明这个动态指令在静态 CFG 里没有对应节点
+                debugMissingInsts++;
+            }
+        }
+        // -------- 修改结束 --------
+
+        // 无论 inst 是否在静态图里，解释器都要照常处理栈和因子图
+        Interpreter.map[this.parseinfo.form].buildtrace(this);
+        if (debugswitch) {
+            pInfo.debugprint();
+            debugStack(this.stackframe);
+        }
 	}
 
 	private void parseSimpleChunk(TraceChunk tChunk) {
@@ -1388,6 +1447,7 @@ public class ByteCodeGraph {
 		if (auto_oracle) {
 			for (Node i : lastDefinedVar) {
 				i.observe(testpass);
+                debugObservedVars++;
 				if (debug_logger_switch)
 					graphLogger.writeln("Observe %s as %b", i.name, testpass);
 			}
@@ -1439,11 +1499,6 @@ public class ByteCodeGraph {
 				}
 			} while (t != null);
 
-			// while ((t = parseTraceFromReader(reader, t, testpass)) != null) {
-			// // Debug use
-			// System.out.println(t);
-			// testpass = getD4jTestState(t);
-			// }
 		} catch (IOException e) {
 			e.printStackTrace();
 		}
@@ -1560,19 +1615,43 @@ public class ByteCodeGraph {
 	String theidom_for_stores;
 	Set<Integer> thestores;
 
-	private void dfs_for_stores(String inst) {
-		if (inst.equals(theidom_for_stores))
-			return;
-		visited_for_stores.add(inst);
-		Integer storen = store_num.get(inst);
-		if (storen != null)
-			thestores.add(storen);
-		List<String> thenexts = predataflowmap.get(inst);
-		for (String next : thenexts) {
-			if (!visited_for_stores.contains(next))
-				dfs_for_stores(next);
-		}
-	}
+    private void dfs_for_stores(String inst) {
+        // 1) 防御：inst 可能为空，直接返回
+        if (inst == null) {
+            return;
+        }
+
+        // 2) 如果到了起始支配点，终止
+        if (inst.equals(theidom_for_stores)) {
+            return;
+        }
+
+        // 3) 防止死循环：如果已经访问过，直接返回
+        if (!visited_for_stores.add(inst)) {
+            return;
+        }
+
+        // 4) 收集当前节点上的 store 指令编号
+        Integer storen = store_num.get(inst);
+        if (storen != null) {
+            thestores.add(storen);
+        }
+
+        // 5) 找前驱（注意：get_pre_idom 之后，这里用的是 predataflowmap）
+        List<String> thenexts = predataflowmap.get(inst);
+
+        // === 关键补丁：没有前驱列表时，视为叶子节点，直接返回，避免 NPE ===
+        if (thenexts == null || thenexts.isEmpty()) {
+            return;
+        }
+
+        // 6) DFS 遍历所有尚未访问过的前驱
+        for (String next : thenexts) {
+            if (!visited_for_stores.contains(next)) {
+                dfs_for_stores(next);
+            }
+        }
+    }
 
 	public void get_stores() {
 		// System.out.println(store_num);
@@ -1600,16 +1679,6 @@ public class ByteCodeGraph {
 		if (!shouldview)
 			return ret;
 		String factorname = "Factor" + factornodes.size();
-		// viewgraph.addEdge(factorname + stmt.getPrintName(), factorname,
-		// stmt.getPrintName());
-		// org.graphstream.graph.Node outfactor = viewgraph.getNode(factorname);
-		// outfactor.setAttribute("ui.class", "factor");
-		// org.graphstream.graph.Node outstmt = viewgraph.getNode(stmt.getPrintName());
-		// outstmt.setAttribute("ui.class", "stmt");
-		// org.graphstream.graph.Edge outedge = viewgraph.getEdge(factorname +
-		// stmt.getPrintName());
-		// outedge.setAttribute("ui.class", "stmt");
-		// outedge.setAttribute("layout.weight", 3);
 		return ret;
 	}
 
@@ -1618,12 +1687,13 @@ public class ByteCodeGraph {
 		prednodes.add(prednode);
 		List<Node> usenodes = new ArrayList<>();
 		usenodes.add(usenode);
+
 		return buildFactor(defnode, prednodes, usenodes, ops, stmt);
 	}
 
 	public FactorNode buildFactor(Node defnode, List<Node> prednodes, List<Node> usenodes, List<String> ops,
 			StmtNode stmt) {
-
+        debugFactorCount++;
 		// evaluation switch
 		this.setStackForNode(defnode);
 
@@ -1682,45 +1752,6 @@ public class ByteCodeGraph {
 		if (!shouldview)
 			return ret;
 		String factorname = "Factor" + factornodes.size();
-		// viewgraph.addEdge(factorname + stmt.getPrintName(), factorname,
-		// stmt.getPrintName());
-		// org.graphstream.graph.Node outfactor = viewgraph.getNode(factorname);
-		// outfactor.setAttribute("ui.class", "factor");
-		// org.graphstream.graph.Node outstmt = viewgraph.getNode(stmt.getPrintName());
-		// outstmt.setAttribute("ui.class", "stmt");
-		// org.graphstream.graph.Edge outedge = viewgraph.getEdge(factorname +
-		// stmt.getPrintName());
-		// outedge.setAttribute("ui.class", "stmt");
-		// outedge.setAttribute("layout.weight", 3);
-
-		// viewgraph.addEdge(factorname + defnode.getPrintName(), factorname,
-		// defnode.getPrintName());
-		// org.graphstream.graph.Node outdef =
-		// viewgraph.getNode(defnode.getPrintName());
-
-		// debugLogger.info("hhhhhhhhhhhui"+outdef.getId());
-		// outdef.setAttribute("ui.class", "thenode");
-		// outedge = viewgraph.getEdge(factorname + defnode.getPrintName());
-		// outedge.setAttribute("ui.class", "def");
-		// outedge.setAttribute("layout.weight", 2);
-		// for (Node node : prednodes) {
-		// viewgraph.addEdge(factorname + node.getPrintName(), factorname,
-		// node.getPrintName());
-		// org.graphstream.graph.Node outpred = viewgraph.getNode(node.getPrintName());
-		// outpred.setAttribute("ui.class", "thenode");
-		// outedge = viewgraph.getEdge(factorname + node.getPrintName());
-		// outedge.setAttribute("ui.class", "pred");
-		// outedge.setAttribute("layout.weight", 3);
-		// }
-		// for (Node node : usenodes) {
-		// viewgraph.addEdge(factorname + node.getPrintName(), factorname,
-		// node.getPrintName());
-		// org.graphstream.graph.Node outuse = viewgraph.getNode(node.getPrintName());
-		// outuse.setAttribute("ui.class", "thenode");
-		// outedge = viewgraph.getEdge(factorname + node.getPrintName());
-		// outedge.setAttribute("ui.class", "use");
-		// outedge.setAttribute("layout.weight", 3);
-		// }
 		return ret;
 	}
 
@@ -2318,14 +2349,6 @@ public class ByteCodeGraph {
 		// Node.setLogger(resultLogger);
 
 		int cnt = 0;
-		// for (Node n : nodes) {
-		// if (!verbose) {
-		// cnt++;
-		// if (cnt > 10)
-		// break;
-		// }
-		// // n.bpPrintProb();
-		// }
 		resultLogger.writeln("Stmts:%d", stmts.size());
 		for (StmtNode n : stmts) {
 			if (!this.resultFilter || !n.getreduced())
