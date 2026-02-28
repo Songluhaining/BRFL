@@ -65,6 +65,20 @@ def modifyback(data):
     f.write(s)
     f.close()
 
+def parse_arguments():
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Run experiments')
+
+    # Argument to run one specific experiment
+    parser.add_argument('--system', help='System name', default="BankAccountTP")
+    # Argument to run one specific SPL system
+    parser.add_argument('--buggy_systems_folder', help='Run specific SPL',
+                        default="./examples/4wise-BankAccountTP-1BUG-Full")
+
+    args = parser.parse_args()
+    return args
 
 if __name__ == '__main__':
+
     fl.fl(False)

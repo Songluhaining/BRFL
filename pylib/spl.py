@@ -1453,9 +1453,10 @@ def _autofit_basic(wb, metric_names):
 
 #@func_set_timeout(3600)
 def fl(debug=True):
-    ProjectBase = "/home/whn/codes/BRFL"
-    system_name = "ZipMe"
-    buggy_systems_folder = "/home/whn/codes/datasets/4wise-ZipMe-1BUG-Full"
+    args = parse_arguments()
+    buggy_systems_folder = args.buggy_systems_folder
+    system_name = args.system
+    ProjectBase = Path(__file__).resolve().parent.parent
 
     sbfl_metrics = [TARANTULA, OCHIAI, OP2, BARINEL, DSTAR, KULCZYNSKI2, M2, HARMONIC_MEAN, ZOLTAR, GEOMETRIC_MEAN]#TARANTULA, OCHIAI, OP2, BARINEL, DSTAR, KULCZYNSKI2, M2, HARMONIC_MEAN, ZOLTAR, GEOMETRIC_MEAN
 
