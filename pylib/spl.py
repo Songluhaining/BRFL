@@ -10,7 +10,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import requests
 
 from SUMethods.mutual_information import su_calculation
 from deleteLogfiles import delete_files_with_name
@@ -37,11 +36,16 @@ from pyutils.mappingUtils import rewrite_logs_for_variant
 from pyutils.ranking.RankingManager import get_set_of_stms, get_executed_stms_of_the_system
 from pyutils.ranking.Spectrum_Expression import *
 from pyutils.sbflPrio import get_sbfl_prio
-from pyutils.utils import group_items_by_class, load_test_file_source, llm_match_passed_for_failed_in_class
+from pyutils.utils import group_items_by_class, load_test_file_source, llm_match_passed_for_failed_in_class, call_llm
+from pyutils.llm_config import get_llm_config
+from pylib.llm_selection_cache import (
+    cache_enabled,
+    derive_cache_identity,
+    load_variant_cache,
+    save_variant_cache,
+)
 from recompile_failed_products import get_failed_product_names
 
-
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 
 use_simple_filter = False
 
@@ -344,35 +348,23 @@ def build_test_desc(item: Dict[str, Any]) -> str:
 
 
 
-def call_deepseek_chat(prompt: str, model: str = "deepseek-chat") -> str:
+def call_chat_model(prompt: str, model: str = None) -> str:
     """
-    调 deepseek 的占位函数：
-    - 这里写的是一个通用 HTTP 调用骨架，具体 URL / 参数请按你本地 deepseek 文档调整。
-    - 返回值：LLM 生成的纯文本。
+    单轮对话调用：把一段 prompt 交给配置好的大模型，返回纯文本。
+
+    具体用哪个厂商 / 哪个模型 / 哪个 Key，全部来自 llm_config.json 或
+    BRFL_LLM_* 环境变量（见 pyutils/llm_config.py），代码里不写死任何密钥。
     """
-    if not DEEPSEEK_API_KEY:
-        raise RuntimeError("DEEPSEEK_API_KEY not set in environment")
+    messages = [
+        {"role": "system", "content": "You are an assistant that only outputs valid JSON."},
+        {"role": "user", "content": prompt},
+    ]
+    return call_llm(messages, model=model, temperature=0.0)
 
-    # TODO: 按照 deepseek 官方 API 文档修改下面的 URL 和 payload
-    url = "https://api.deepseek.com/v1/chat/completions"  # 占位
-    headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "You are an assistant that only outputs valid JSON."},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.0,
-    }
 
-    resp = requests.post(url, headers=headers, json=payload, timeout=60)
-    resp.raise_for_status()
-    data = resp.json()
-    # 根据 deepseek 的格式取出内容，这里假设是 OpenAI 式的
-    return data["choices"][0]["message"]["content"]
+# 旧函数名保留为别名，避免外部脚本调用失效。
+def call_deepseek_chat(prompt: str, model: str = None) -> str:
+    return call_chat_model(prompt, model=model)
 
 def llm_match_passed_for_failed(
         failed_item: Dict[str, Any],
@@ -431,7 +423,7 @@ def llm_match_passed_for_failed(
     - Do not add any extra keys or explanations outside this JSON object.
     """)
 
-    raw_resp = call_deepseek_chat(prompt)
+    raw_resp = call_chat_model(prompt)
 
     # 调试写盘：方便你后面看 LLM 行为
     dbg_file = dbg_dir / f"llm_match_{failed_item['estest_class']}__{failed_item['test_method']}.json"
@@ -455,14 +447,29 @@ def collect_items_passed(
     passed_dir: Path,
     failed_items: List[Dict[str, Any]],
     variant_root: Path,
-    model_name: str = "deepseek-chat",
-    top_k: int = 1,
+    # 模型 / 温度 / top_k / API Key：留空表示用 llm_config.json 或 BRFL_LLM_* 环境变量
+    model_name: str = None,
+    top_k: int = None,
+    temperature: float = None,
+    api_key: str = None,
+    # 持久化缓存身份；为 None 时从 variant_root 路径推导
+    # （system=数据集目录名, mutant=祖父目录, variant=叶子目录）。
+    system: str = None,
+    mutant: str = None,
+    variant: str = None,
 ) -> List[Dict[str, Any]]:
     """
     使用大模型，从所有 passed 测试中，为每个 failing 测试在“同一个测试类”内
     选出少量反事实性质的通过用例。
 
+    使用哪个厂商 / 模型 / 端点 / Key，由 llm_config.json（或 BRFL_LLM_* 环境变量）
+    决定，见 pyutils/llm_config.py；代码中不含任何密钥。
+
     返回：被选中的 passed item 列表（item 结构与 collect_items 一致）。
+
+    LLM 的选择结果会被持久化到 <project_root>/llm_selection_cache/ 下，
+    （路径与变体目录无关，不会因变体被删除而丢失）。再次运行时若命中缓存，
+    则直接复用、不再调用大模型，避免重复产生 API 费用。
     """
     passed_items_all = collect_items(passed_dir)
 
@@ -470,13 +477,49 @@ def collect_items_passed(
         failed_items, passed_items_all
     )
 
+    # ---- 持久化 LLM 缓存（重跑实验时复用，省去大模型费用） ----
+    use_cache = cache_enabled()
+    variant_cache: Dict[str, Dict[str, List[str]]] = {}
+    cache_dirty = False
+    if use_cache:
+        c_system, c_mutant, c_variant = derive_cache_identity(variant_root, system=system)
+        if mutant:
+            c_mutant = mutant
+        if variant:
+            c_variant = variant
+        variant_cache = load_variant_cache(c_system, c_mutant, c_variant)
+        if variant_cache:
+            print(f"[llm_cache] loaded {len(variant_cache)} cached test class(es) "
+                  f"for {c_system}/{c_mutant}/{c_variant}")
+
     selected_passed: List[Dict[str, Any]] = []
     seen_passed_keys = set()  # 用于去重：(estest_class, test_method)
+
+    def _apply_mapping(estest_class, mapping, f_list, p_list):
+        passed_index = {it["test_method"]: it for it in p_list}
+        for f_item in f_list:
+            fname = f_item["test_method"]
+            for mname in mapping.get(fname, []):
+                key = (estest_class, mname)
+                if key in seen_passed_keys:
+                    continue
+                seen_passed_keys.add(key)
+                passed_item = passed_index.get(mname)
+                if passed_item is not None:
+                    selected_passed.append(passed_item)
 
     for estest_class, f_list in failed_by_class.items():
         p_list = passed_by_class.get(estest_class, [])
         if not p_list:
             # 这个测试类里没有任何通过测试，跳过
+            continue
+
+        # 命中缓存：复用已存的选择，跳过大模型
+        if use_cache and estest_class in variant_cache:
+            mapping = variant_cache[estest_class]
+            print(f"[LLM][cache-hit] {estest_class}: reusing stored selection "
+                  f"({sum(len(v) for v in mapping.values())} matches)")
+            _apply_mapping(estest_class, mapping, f_list, p_list)
             continue
 
         print(f"[LLM] {estest_class}: {len(f_list)} failing, {len(p_list)} passing")
@@ -489,30 +532,23 @@ def collect_items_passed(
                 test_source=test_src,  # load_test_source_for_estest 读到的整份 .java
                 failed_items_in_class=f_list,  # 该测试类下所有 failing items
                 passed_items_in_class=p_list,  # 该测试类下所有 passing items
-                model_name="qwen-plus",
-                temperature=0.1,  # 想稳定一点可以用更低温度
-                top_k=5,
-                api_key="sk-f57b1660c96d4810a354314d2b7d1e80",  # 如果你已经在环境变量里设置了 DASHSCOPE_API_KEY，可以留空
+                model_name=model_name,
+                temperature=temperature,
+                top_k=top_k,
+                api_key=api_key,  # 留空表示用 llm_config.json / 环境变量里的 Key
             )
         except Exception as e:
             print(f"[LLM][WARN] failed for {estest_class}: {e}")
             continue
 
-        # 为当前测试类建立一个 {method_name -> item} 的索引
-        passed_index = {it["test_method"]: it for it in p_list}
+        if use_cache:
+            variant_cache[estest_class] = mapping
+            cache_dirty = True
 
-        for f_item in f_list:
-            fname = f_item["test_method"]
-            cand_names = mapping.get(fname, [])
-            for mname in cand_names:
-                key = (estest_class, mname)
-                if key in seen_passed_keys:
-                    continue
-                seen_passed_keys.add(key)
+        _apply_mapping(estest_class, mapping, f_list, p_list)
 
-                passed_item = passed_index.get(mname)
-                if passed_item is not None:
-                    selected_passed.append(passed_item)
+    if use_cache and cache_dirty:
+        save_variant_cache(c_system, c_mutant, c_variant, variant_cache)
 
     print(f"[collect_items_passed] selected {len(selected_passed)} passed tests via LLM")
     return selected_passed
@@ -521,8 +557,10 @@ def make_test_name_for_oracle(sut_class: str, test_method: str) -> str:
     # sut_class 形如 "ElevatorSystem.Elevator"
     # test_method 形如 "test53"
     base = f"{sut_class}_{test_method}"             # ElevatorSystem.Elevator_test53
-    cls, meth = base.split(".", 1)                  # "ElevatorSystem", "Elevator_test53"
-    return f"{cls}::{meth}"                         # ElevatorSystem::Elevator_test53
+    if "." in base:
+        cls, meth = base.split(".", 1)              # "ElevatorSystem", "Elevator_test53"
+        return f"{cls}::{meth}"                     # ElevatorSystem::Elevator_test53
+    return f"::{base}"                              # default-package class (TankWar): empty pkg, keep '::'
 
 def getsplcmdline(variant_path: str, variant: str, debug: bool = True) -> List[str]:
     vr = Path(variant_path).resolve()

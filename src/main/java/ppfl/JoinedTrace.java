@@ -132,15 +132,17 @@ public class JoinedTrace {
             name = name.substring(0, name.length() - suffix.length());
         }
 
-        // === 关键修改：按“第一个 .”分割，和 make_test_name_for_oracle 完全一致 ===
+        // === 按“第一个 .”分割，和 make_test_name_for_oracle 完全一致 ===
         int index = name.indexOf('.');
+        String fullname;
         if (index < 0) {
-            System.err.println("[JoinedTrace][WARN] unexpected log filename (no '.'): " + name + ", skip.");
-            return;
+            // default-package class (no package, e.g. TankWar): empty package, keep "::"
+            fullname = "::" + name;               // 例如 ::Maler_test19
+        } else {
+            String cls = name.substring(0, index);
+            String meth = name.substring(index + 1);
+            fullname = cls + "::" + meth;          // 例如 ElevatorSystem::Elevator_test53
         }
-        String cls = name.substring(0, index);
-        String meth = name.substring(index + 1);
-        String fullname = cls + "::" + meth;  // 例如 ElevatorSystem::Elevator_test53
 
         // 保留原来的“大文件跳过”逻辑
         if (getD4jTestState(fullname) && f.length() > MAX_FILE_LIMIT) {

@@ -1506,8 +1506,10 @@ public class ByteCodeGraph {
 
 	public String parseTraceFromReader(BufferedReader reader, String testname, boolean testpass) throws IOException {
 		this.predstack.clear();
-		if (testname != null)
-			this.testname = testname.split("::")[1];
+		if (testname != null) {
+			String[] _sp = testname.split("::");
+			this.testname = (_sp.length > 1) ? _sp[1] : _sp[0];  // default-package: "::X" -> "X"
+		}
 		this.initmaps();
 		String t;
 		String delimiterPrefix = "###";

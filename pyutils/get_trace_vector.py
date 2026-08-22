@@ -7,10 +7,10 @@ from pyutils.FileManager import list_dir, join_path, get_outer_dir
 import xml.etree.ElementTree as ET
 
 def get_spectrum_failed_coverage_inf_new(spectrum_fail_coverage_file, out_exed, out_not_exed):
+    exed_data = set()
+    not_exed_data = set()
     if os.path.isfile(spectrum_fail_coverage_file):
         data = {}
-        exed_data = set()
-        not_exed_data = set()
         #data[variant] = []
         try:
             tree = ET.parse(spectrum_fail_coverage_file)
@@ -33,9 +33,8 @@ def get_spectrum_failed_coverage_inf_new(spectrum_fail_coverage_file, out_exed, 
                             id = line.get('featureClass') + "." + line.get('featureLineNum')
                             not_exed_data.add(id)
         except Exception as e:
-            print(e)
-            logging.info("Exception when parsing %s", spectrum_fail_coverage_file, e)
-        return exed_data, not_exed_data
+            logging.info("Exception when parsing %s", spectrum_fail_coverage_file, exc_info=True)
+    return exed_data, not_exed_data   # always return a tuple (empty if no failed spectrum -> passing product)
 
 def coverage_filename_to_testname(cf: str) -> str:
     # 只取文件名（防止后面写成路径）
@@ -136,6 +135,5 @@ def get_spectrum_stm(spectrum_fail_coverage_file, stmt2id):
                             stmt2id[id] = cur_id
 
         except Exception as e:
-            print(e)
-            logging.info("Exception when parsing %s", spectrum_fail_coverage_file, e)
-        return stmt2id
+            logging.info("Exception when parsing %s", spectrum_fail_coverage_file, exc_info=True)
+    return stmt2id   # always return stmt2id (unchanged if no failed spectrum -> passing product)

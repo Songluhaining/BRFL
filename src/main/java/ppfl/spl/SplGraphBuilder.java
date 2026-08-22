@@ -374,14 +374,15 @@ public class SplGraphBuilder {
 
             String base = fname.substring(0, fname.length() - ".log".length());
             int dotIdx = base.indexOf('.');
+            String testName;
             if (dotIdx <= 0 || dotIdx == base.length() - 1) {
-                System.err.println("[SPL][WARN] unexpected log filename format, skip: " + fname);
-                continue;
+                // default-package class (no package, e.g. TankWar): empty package, keep "::"
+                testName = "::" + base;             // "::Maler_test41"
+            } else {
+                String cls  = base.substring(0, dotIdx);  // ElevatorSystem
+                String meth = base.substring(dotIdx + 1); // Elevator_test53
+                testName = cls + "::" + meth;
             }
-
-            String cls  = base.substring(0, dotIdx);  // ElevatorSystem
-            String meth = base.substring(dotIdx + 1); // Elevator_test53
-            String testName = cls + "::" + meth;
 
             if (allowedTestsForVariant != null && !allowedTestsForVariant.contains(testName)) {
                 System.out.println("[SPL][Cluster] skip test (not in this cluster): variant=" +

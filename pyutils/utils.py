@@ -1,12 +1,12 @@
 import os
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 import json
 import textwrap
 from collections import defaultdict
 from http import HTTPStatus
-import dashscope
-from dashscope import Generation
+
+from pyutils.llm_config import get_llm_config, resolve_api_key
 
 def load_test_file_source(variant_root: Path, estest_class: str) -> str:
     """
@@ -49,18 +49,25 @@ def llm_match_passed_for_failed_in_class(
     test_source: str,
     failed_items_in_class: List[Dict[str, Any]],
     passed_items_in_class: List[Dict[str, Any]],
-    model_name: str = "qwen-plus",
-    temperature: float = 0.1,
-    top_k: int = 5,
-    api_key: str | None = None,
+    model_name: Optional[str] = None,
+    temperature: Optional[float] = None,
+    top_k: Optional[int] = None,
+    api_key: Optional[str] = None,
 ) -> Dict[str, List[str]]:
     """
-    使用 Qwen，为单个测试类 estest_class 中的每个 failing 测试方法，
+    调用大模型，为单个测试类 estest_class 中的每个 failing 测试方法，
     选出若干最相近的 passing 测试方法（反事实候选）。
+
+    模型名 / 温度 / top_k / API Key 若留空，则统一取自 pyutils.llm_config
+    （配置文件 llm_config.json 或 BRFL_LLM_* 环境变量）。
 
     返回:
         mapping: {failed_method_name: [passed_method_name1, ...]}
     """
+    cfg = get_llm_config()
+    model_name = model_name or cfg["model"]
+    temperature = cfg["temperature"] if temperature is None else temperature
+    top_k = cfg["top_k"] if top_k is None else top_k
     # 1) 提取方法名列表，方便做合法性检查
     failed_methods = [it["test_method"] for it in failed_items_in_class]
     passed_methods = [it["test_method"] for it in passed_items_in_class]
@@ -110,12 +117,12 @@ def llm_match_passed_for_failed_in_class(
         {"role": "user",   "content": user_prompt},
     ]
 
-    # 3) 调用 Qwen
-    raw = call_qwen(
+    # 3) 调用大模型（Key 由配置文件 / 环境变量提供，不写死在代码里）
+    raw = call_llm(
         messages,
         model=model_name,
         temperature=temperature,
-        api_key="sk-f57b1660c96d4810a354314d2b7d1e80",
+        api_key=api_key,
     ).strip()
 
     # 4) 处理可能出现的 ```json ... ``` 或额外说明，尽量只保留 JSON 部分
@@ -160,19 +167,65 @@ def llm_match_passed_for_failed_in_class(
 
     return mapping
 
-def call_qwen(messages, model="qwen-plus", temperature=0.1, api_key: str | None = None) -> str:
+def call_llm(
+    messages,
+    model: Optional[str] = None,
+    temperature: Optional[float] = None,
+    api_key: Optional[str] = None,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+    timeout: Optional[float] = None,
+) -> str:
     """
-    仅使用 dashscope.Generation 调用千问对话模型。
-    messages: [{"role":"system/user/assistant", "content":"..."}]
-    """
-    # 可选：显式设置 API Key（如果你已在外层设置了环境变量，这里可省略）
-    # 1) 统一确定要用的 key
-    key = api_key or os.getenv("DASHSCOPE_API_KEY")
-    if not key:
-        raise RuntimeError("未提供 DASHSCOPE_API_KEY 或 api_key")
+    与具体厂商无关的对话补全调用。
 
-    # 2) 同步给 dashscope 模块本身
-    # dashscope.api_key = key
+    messages: [{"role":"system/user/assistant", "content":"..."}]
+
+    所有留空的参数都从 pyutils.llm_config 读取（配置文件 llm_config.json、
+    或 BRFL_LLM_* / DASHSCOPE_API_KEY / OPENAI_API_KEY 等环境变量）。
+
+    支持两种接入方式（由 provider 决定）：
+      * "dashscope"：阿里云百炼原生 SDK（dashscope.Generation）；
+      * "openai"   ：任何兼容 OpenAI /chat/completions 协议的服务
+                     （OpenAI、DeepSeek、百炼 compatible-mode、vLLM、Ollama…），
+                     此时必须提供 base_url。
+    """
+    cfg = get_llm_config()
+    provider = (provider or cfg["provider"]).lower()
+    model = model or cfg["model"]
+    temperature = cfg["temperature"] if temperature is None else temperature
+    timeout = cfg["timeout"] if timeout is None else timeout
+    base_url = base_url if base_url is not None else cfg["base_url"]
+    key = resolve_api_key(api_key)
+
+    if provider == "openai":
+        return _call_openai_compatible(
+            messages,
+            model=model,
+            temperature=temperature,
+            api_key=key,
+            base_url=base_url,
+            timeout=timeout,
+        )
+    if provider == "dashscope":
+        return _call_dashscope(
+            messages,
+            model=model,
+            temperature=temperature,
+            api_key=key,
+        )
+    raise RuntimeError(f"不支持的 provider: {provider!r}（可选 'dashscope' / 'openai'）")
+
+
+def _call_dashscope(messages, model: str, temperature: float, api_key: str) -> str:
+    """阿里云百炼原生 SDK 调用；仅在真正用到时才导入 dashscope。"""
+    try:
+        from dashscope import Generation
+    except ImportError as e:
+        raise RuntimeError(
+            "provider='dashscope' 需要安装 dashscope 包（pip install dashscope），"
+            "或者在配置里改用 provider='openai' + base_url。"
+        ) from e
 
     # 使用 Generation，结果格式指定为 message，便于统一解析
     resp = Generation.call(
@@ -180,7 +233,7 @@ def call_qwen(messages, model="qwen-plus", temperature=0.1, api_key: str | None 
         messages=messages,
         temperature=temperature,
         result_format="message",
-        api_key=key,
+        api_key=api_key,
     )
 
     status = getattr(resp, "status_code", HTTPStatus.OK)
@@ -196,3 +249,49 @@ def call_qwen(messages, model="qwen-plus", temperature=0.1, api_key: str | None 
         if text:
             return text
         return json.dumps(getattr(resp, "output", {}), ensure_ascii=False)
+
+
+def _call_openai_compatible(
+    messages,
+    model: str,
+    temperature: float,
+    api_key: str,
+    base_url: str,
+    timeout: float,
+) -> str:
+    """任何兼容 OpenAI 协议的 /chat/completions 端点。"""
+    if not base_url:
+        raise RuntimeError(
+            "provider='openai' 时必须配置 base_url，例如 "
+            "'https://api.deepseek.com/v1' 或 "
+            "'https://dashscope.aliyuncs.com/compatible-mode/v1'。"
+        )
+
+    import requests
+
+    url = base_url.rstrip("/") + "/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+    }
+
+    resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"LLM 调用失败: HTTP {resp.status_code}, body={resp.text[:500]}"
+        )
+    data = resp.json()
+    try:
+        return data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as e:
+        raise RuntimeError(f"无法解析 LLM 返回内容: {e}\nraw={json.dumps(data)[:500]}") from e
+
+
+def call_qwen(messages, model=None, temperature=None, api_key: Optional[str] = None) -> str:
+    """向后兼容的旧接口名，等价于 call_llm（配置决定实际用哪个模型）。"""
+    return call_llm(messages, model=model, temperature=temperature, api_key=api_key)
